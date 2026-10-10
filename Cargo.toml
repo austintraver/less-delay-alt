@@ -11,9 +11,15 @@ titleid = "01006A800016E000" # Smash Ultimate
 crate-type = ["cdylib"]
 
 [dependencies]
-skyline = "0.2.0"
+skyline = { git = "https://github.com/ultimate-research/skyline-rs.git" }
 skyline_ex = { package = "skyline", git = "https://github.com/Skyline-ex/skylinex" }
 once_cell = { version = "1.20.2" }
+
+# The crates.io skyline 0.2 pulls nnsdk 0.2.0, whose #[repr(simd)] structs with scalar fields
+# current nightlies reject (E0076). skyline-rs from git depends on nnsdk 0.6, and this patch
+# follows the maintained fork of it, as UltimateTrainingModpack does.
+[patch.crates-io]
+nnsdk = { git = "https://github.com/ultimate-research/nnsdk-rs" }
 
 [profile.dev]
 panic = "abort"
