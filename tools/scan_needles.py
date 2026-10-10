@@ -18,30 +18,53 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
 
-def parse_offsets(source: str) -> dict[str, tuple[list[int | None], int]]:
+Pattern = list[tuple[int, int]]  # (value, mask) per byte; the game byte must satisfy byte & mask == value
+
+TOKEN = re.compile(r"b\(0x([0-9a-fA-F]{2})\)|m\(0x([0-9a-fA-F]{2}),\s*0x([0-9a-fA-F]{2})\)|\bBL\[\d\]|\bW\b")
+
+
+def parse_offsets(source: str) -> dict[str, tuple[Pattern, int]]:
     """Return {location_name: (pattern, start_offset)} from offsets.rs."""
-    patterns: dict[str, tuple[list[int | None], int]] = {}
+    source = re.sub(r"//.*", "", source)
+    bl = re.search(r"const BL: \[Byte; 4\] = \[(.*?)\];", source, re.S)
+    bl_pattern = parse_tokens(bl.group(1), {}) if bl else []
+    patterns: dict[str, tuple[Pattern, int]] = {}
     for block in re.finditer(r"SSBUMemoryLocation \{(.*?)\n\};", source, re.S):
         body = block.group(1)
         signature = re.search(r"signature: &\[(.*?)\],\s*start_offset", body, re.S).group(1)
-        signature = re.sub(r"//.*", "", signature)
-        pattern: list[int | None] = []
-        for token in re.findall(r"b\(0x([0-9a-fA-F]{2})\)|\bW\b", signature):
-            pattern.append(int(token, 16) if token else None)
+        pattern = parse_tokens(signature, {"BL": bl_pattern})
         start_offset = int(re.search(r"start_offset: (-?\d+)", body).group(1))
         name = re.search(r'location_name: "([^"]+)"', body).group(1)
         patterns[name] = (pattern, start_offset)
     return patterns
 
 
-def find_all(haystack: bytes, pattern: list[int | None]) -> list[int]:
-    fixed = [(i, v) for i, v in enumerate(pattern) if v is not None]
-    anchor_index, anchor_value = fixed[0]
+def parse_tokens(text: str, arrays: dict[str, Pattern]) -> Pattern:
+    pattern: Pattern = []
+    for match in TOKEN.finditer(text):
+        exact, value, mask = match.group(1), match.group(2), match.group(3)
+        token = match.group(0)
+        if exact:
+            pattern.append((int(exact, 16), 0xFF))
+        elif value:
+            mask_value = int(mask, 16)
+            pattern.append((int(value, 16) & mask_value, mask_value))
+        elif token.startswith("BL["):
+            pattern.append(arrays["BL"][int(token[3])])
+        else:
+            pattern.append((0, 0))
+    return pattern
+
+
+def find_all(haystack: bytes, pattern: Pattern) -> list[int]:
+    anchor_index, (anchor_value, _) = next((i, vm) for i, vm in enumerate(pattern) if vm[1] == 0xFF)
     hits = []
     position = haystack.find(bytes([anchor_value]), anchor_index)
     while position != -1:
         start = position - anchor_index
-        if start + len(pattern) <= len(haystack) and all(haystack[start + i] == v for i, v in fixed):
+        if start + len(pattern) <= len(haystack) and all(
+            haystack[start + i] & mask == value for i, (value, mask) in enumerate(pattern) if mask
+        ):
             hits.append(start)
         position = haystack.find(bytes([anchor_value]), position + 1)
     return hits
